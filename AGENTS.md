@@ -47,9 +47,12 @@ There is **no run step and no server**: the build is the whole story. `INSTRUCTI
 is the template's contract, kept as-is; this file records the decisions taken
 on top of it.
 
-`wasm-bindgen` is pinned to `=0.2.128` in `Cargo.toml` and the CLI must match
-exactly — a mismatched generator produces bindings the runtime will not load and
-the page fails with "Minesweeper could not start".
+`Cargo.toml` asks for `wasm-bindgen = "0.2"` and `Cargo.lock` records the one
+version that means, because `wasm-bindgen-futures`, `js-sys` and `web-sys` each
+depend on an exact `wasm-bindgen`. The CLI must be that version — a mismatched
+generator produces bindings the runtime will not load and the page fails with
+"Minesweeper could not start". Both workflows read the version from `Cargo.lock`
+instead of naming it, so there is nothing to keep in step.
 
 ## Where the rules live
 
