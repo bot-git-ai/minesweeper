@@ -40,6 +40,59 @@ fn style() -> String {
         .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
 }
 
+/// The `#board` rule, up to its closing brace.
+///
+/// The board's declarations are asserted in several places, and a declaration
+/// somewhere else in the sheet is not the board's: this is the rule, not the
+/// file.
+fn board_rule(css: &str) -> &str {
+    css.split_once("#board {")
+        .expect("the board rule")
+        .1
+        .split_once('}')
+        .expect("the end of the board rule")
+        .0
+}
+
+/// One custom property's value, without its trailing semicolon.
+fn declared<'a>(rule: &'a str, property: &str) -> &'a str {
+    let prefix = format!("{property}:");
+    rule.lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix(prefix.as_str()))
+        .unwrap_or_else(|| panic!("{property} is not declared"))
+        .trim()
+        .trim_end_matches(';')
+        .trim()
+}
+
+/// A custom property in pixels, read out of the stylesheet.
+///
+/// Derived rather than repeated: a second copy of the number in the test would
+/// agree with itself after the stylesheet changed, which is the one thing a test
+/// like this exists to notice.
+fn pixels(rule: &str, property: &str) -> f64 {
+    let value = declared(rule, property);
+    value
+        .strip_suffix("px")
+        .unwrap_or_else(|| panic!("{property} is not in pixels: {value}"))
+        .parse()
+        .unwrap_or_else(|error| panic!("{property} is not a number: {value} ({error})"))
+}
+
+/// The same, for a length in `rem`, returned in pixels.
+///
+/// A `rem` is the root font size, and nothing in the sheet sets one, so it is the
+/// browser's default 16px.
+fn rems(rule: &str, property: &str) -> f64 {
+    let value = declared(rule, property);
+    16.0 * value
+        .strip_suffix("rem")
+        .unwrap_or_else(|| panic!("{property} is not in rem: {value}"))
+        .parse::<f64>()
+        .unwrap_or_else(|error| panic!("{property} is not a number: {value} ({error})"))
+}
+
 fn worker_template() -> String {
     let path = root().join("src/service-worker.js");
     std::fs::read_to_string(&path)
@@ -2586,18 +2639,93 @@ fn every_level_draws_its_squares_the_same_way() {
         "and nothing may mark a board as needing one"
     );
     // The gap and the radius belong to the board and the square, once.
-    let board = css
-        .split_once("#board {")
-        .expect("the board rule")
-        .1
-        .split_once('}')
-        .expect("the end of the rule")
-        .0;
+    let board = board_rule(&css);
     assert!(board.contains("--gap: 2px"), "one gap, for every level");
     // And the floor that made the second style unnecessary is still there.
     assert!(
         board.contains("--min-cell: 24px"),
         "the square's floor is what keeps a dense board legible"
+    );
+}
+
+/// One square size, at every level.
+///
+/// The size used to be fitted per level — the largest square that lets *this*
+/// board fit the box — so a phone drew Beginner's nine squares at ~39px and every
+/// wider board at the 24px floor, and changing level visibly resized the game.
+/// The fit now divides a reference board rather than the level's own board, and a
+/// board bigger than the box scrolls instead. What enforces it is this: one
+/// `var(--cols)` back in either fit line undoes the whole thing, and nothing on
+/// the page looks wrong until somebody switches level.
+#[test]
+fn one_square_size_at_every_level() {
+    let css = style();
+    let board = board_rule(&css);
+
+    let fits: Vec<&str> = board
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("--fit-w:") || line.starts_with("--fit-h:"))
+        .collect();
+    assert_eq!(fits.len(), 2, "both fits must be declared, once each");
+    for fit in fits {
+        assert!(
+            !fit.contains("var(--cols)") && !fit.contains("var(--rows)"),
+            "this fit sizes the square from the level's own board, so every level \
+             gets a size of its own: {fit}"
+        );
+        assert!(
+            fit.contains("var(--ref-squares)") && fit.contains("var(--ref-overhead)"),
+            "the fit must divide the reference board, gaps and all: {fit}"
+        );
+    }
+    assert_eq!(
+        board.matches("--ref-squares:").count(),
+        1,
+        "the reference board is declared once, and both fits read that one"
+    );
+
+    // The reference sizes the *square*. The board is still its own columns, or a
+    // nine-square board would be drawn as wide as a twelve-square one.
+    assert!(
+        board.contains("--overhead: calc((var(--cols) + 1) * var(--gap))")
+            && board.contains("width: calc(var(--cols) * var(--cell) + var(--overhead))"),
+        "the board's width is its own columns and gaps, not the reference's"
+    );
+
+    // A scrollbar is not a level. If the gutter is not reserved, a board tall
+    // enough to scroll gets a narrower box and therefore a smaller square than a
+    // board that happens not to scroll — a few percent, and visible.
+    assert!(
+        css.contains("scrollbar-gutter: stable"),
+        "the box must reserve the scrollbar's width, or the square's size depends \
+         on whether this board needed one"
+    );
+}
+
+/// A desktop draws every board at the ceiling, so the ceiling has to leave the
+/// middle board whole.
+///
+/// On a laptop the fit reaches `--max-cell` and stops, which means that one
+/// number is the size *every* level is drawn at there — so it is also the number
+/// that decides whether Intermediate fits a desktop without being scrolled. It
+/// was 56px while a square was only ever that big on the nine-square board; with
+/// one size for all four, 16 × 56px plus the gaps is wider than the page's own
+/// column, and the middle board would scroll for no reason a reader could see.
+#[test]
+fn the_largest_square_still_leaves_the_middle_board_whole() {
+    let css = style();
+    let board = board_rule(&css);
+    let max_cell = pixels(board, "--max-cell");
+    let gap = pixels(board, "--gap");
+    let column = rems(&css, "--board-max");
+
+    // Sixteen squares across, and a gap either side of every one of them.
+    let middle = 16.0 * max_cell + 17.0 * gap;
+    assert!(
+        middle <= column,
+        "the middle board is {middle}px at the largest square, inside a {column}px \
+         column: it would scroll on a desktop"
     );
 }
 
